@@ -1,0 +1,102 @@
+name: Deploy to AWS ECS
+
+on:
+  push:
+    branches: [main]
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  ECS_CLUSTER: cloud-native-ms-prod
+
+jobs:
+  deploy:
+    name: Build, Push & Deploy
+    runs-on: ubuntu-latest
+    if: ${{ secrets.AWS_ACCESS_KEY_ID != '' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push Auth image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/auth
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/cloud-native-ms/auth:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/cloud-native-ms/auth:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push Orders image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/orders
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/cloud-native-ms/orders:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/cloud-native-ms/orders:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push Notifications image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/notifications
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/cloud-native-ms/notifications:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/cloud-native-ms/notifications:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update ECS service — Auth
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service cloud-native-ms-auth \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Update ECS service — Orders
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service cloud-native-ms-orders \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Update ECS service — Notifications
+        run: |
+          aws ecs update-service \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --service cloud-native-ms-notifications \
+            --force-new-deployment \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Wait for stable deployment
+        run: |
+          aws ecs wait services-stable \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --services cloud-native-ms-auth cloud-native-ms-orders cloud-native-ms-notifications \
+            --region ${{ env.AWS_REGION }}
+
+      - name: Deployment summary
+        run: |
+          echo "deployed ${{ github.sha }} to ${{ env.ECS_CLUSTER }}"

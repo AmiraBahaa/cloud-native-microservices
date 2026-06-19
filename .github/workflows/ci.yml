@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get install -y jq
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Auth image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/auth
+          push: false
+          tags: cloud-native-ms/auth:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Orders image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/orders
+          push: false
+          tags: cloud-native-ms/orders:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Notifications image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/notifications
+          push: false
+          tags: cloud-native-ms/notifications:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start services
+        run: |
+          JWT_SECRET=ci-test-secret docker compose up -d
+          docker compose ps
+
+      - name: Wait for services to be healthy
+        run: |
+          sleep 25
+          docker compose ps
+
+      - name: Health checks
+        run: |
+          curl -f http://localhost/health
+          curl -f http://localhost:8001/health
+          curl -f http://localhost:8002/health
+          curl -f http://localhost:8003/health
+
+      - name: Integration test
+        run: |
+          curl -sf -X POST http://localhost/auth/register/ \
+            -H "Content-Type: application/json" \
+            -d '{"username":"testuser","password":"testpass123","email":"test@example.com"}'
+
+          TOKEN=$(curl -sf -X POST http://localhost/auth/login/ \
+            -H "Content-Type: application/json" \
+            -d '{"username":"testuser","password":"testpass123"}' | jq -r '.access_token')
+
+          echo "token: ${TOKEN:0:20}..."
+
+          curl -sf -X POST http://localhost/orders/ \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"product":"Laptop","quantity":1,"price":999.99}'
+
+          sleep 2
+
+          curl -sf http://localhost/notifications/ \
+            -H "Authorization: Bearer $TOKEN"
+
+      - name: Print logs on failure
+        if: failure()
+        run: docker compose logs
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

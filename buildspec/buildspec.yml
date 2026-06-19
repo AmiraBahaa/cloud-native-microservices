@@ -1,0 +1,24 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin $ECR_REPO
+      - IMAGE_TAG=$CODEBUILD_RESOLVED_SOURCE_VERSION
+
+  build:
+    commands:
+      - docker build -t $ECR_REPO:$IMAGE_TAG $SERVICE_DIR
+      - docker tag $ECR_REPO:$IMAGE_TAG $ECR_REPO:latest
+
+  post_build:
+    commands:
+      - docker push $ECR_REPO:$IMAGE_TAG
+      - docker push $ECR_REPO:latest
+      - printf '[{"name":"%s","imageUri":"%s"}]' $SERVICE_NAME $ECR_REPO:$IMAGE_TAG > imagedefinitions.json
+
+artifacts:
+  files:
+    - imagedefinitions.json
+    - appspec.yml
+    - taskdef.json
